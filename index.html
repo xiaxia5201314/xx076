@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <meta http-equiv="Accept-CH" content="DPR, Viewport-Width, Width">
+    <!-- 添加图标 -->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎬</text></svg>" type="image/svg+xml">
+    <title>竖版视频墙</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="stars" id="stars"></div>
+    <h1 style="text-align: center; margin: 20px 0;">视频墙</h1>
+    <div id="videoCount" style="text-align: center; color: #fff; margin-bottom: 20px;">
+        <button id="reloadButton" class="glass-button">
+            <svg class="reload-icon" viewBox="0 0 24 24">
+                <path d="M17.65 6.35C16.2 4.9 14.21 4 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08c-.82 2.33-3.04 4-5.65 4-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+            </svg>
+            重新加载
+        </button>
+        已加载: <span id="currentCount">0</span> / <span id="totalCount">加载中...</span>
+    </div>
+    <div class="video-container" id="videoContainer">
+        <!-- 视频卡片将通过JavaScript动态生成 -->
+    </div>
+
+    <div class="video-stats">
+        <div class="stats-item">
+            <span id="viewCount">0</span>
+            <span>观看</span>
+        </div>
+        <div class="stats-item">
+            <span id="likeCount">0</span>
+            <span>点赞</span>
+        </div>
+    </div>
+
+    <script>
+        // 在 script 标签开始处添加全局变量
+        let videoContainer;
+        let currentCountElement;
+        let totalCountElement;
+        let loadedCount = 0;
+        let validVideos = [];
+        let totalVideos = 0;
+        let globalHoverEnabled = true;
+
+        window.addEventListener('error', function(e) {
+            if (e.target.tagName === 'VIDEO') {
+                console.error('视频加载错误:', {
+                    src: e.target.src,
+                    error: e.target.error,
+                    networkState: e.target.networkState,
+                    readyState: e.target.readyState,
+                    currentTime: e.target.currentTime,
+                    paused: e.target.paused,
+                    ended: e.target.ended,
+                    muted: e.target.muted,
+                    volume: e.target.volume
+                });
+            }
+        }, true);
+
+        function createVideoCard(videoNumber) {
+            const videoCard = document.createElement('div');
+            videoCard.className = 'video-card';
+            
+            const video = document.createElement('video');
+            video.loop = true;
+            video.preload = 'auto';
+            video.setAttribute('playsinline', '');
+            video.muted = true;
+            
+            let isPlaying = false;
+            
+            // 鼠标悬停事件
+            videoCard.addEventListener('mouseenter', () => {
+                if (!isPlaying && video.classList.contains('loaded')) {
+                    video.play().catch(console.warn);
+                }
+            });
+            
+            videoCard.addEventListener('mouseleave', () => {
+                if (!isPlaying) {
+                    video.pause();
+                    video.currentTime = 0;
+                }
+            });
+            
+            // 添加点击播放/关闭功能
+            videoCard.addEventListener('click', async () => {
+                if (!isPlaying && video.classList.contains('loaded')) {
+                    // 播放视频
+                    isPlaying = true;
+                    video.muted = false;
+                    videoCard.classList.add('playing');
+                    document.body.classList.add('video-playing');
+                    try {
+                        await video.play();
+                    } catch (error) {
+                        console.warn('播放失败:', error);
+                        isPlaying = false;
+                        video.muted = true;
+                        videoCard.classList.remove('playing');
+                        document.body.classList.remove('video-playing');
+                    }
+                } else if (isPlaying) {
+                    // 关闭视频
+                    isPlaying = false;
+                    video.muted = true;
+                    video.pause();
+                    video.currentTime = 0;
+                    videoCard.classList.remove('playing');
+                    document.body.classList.remove('video-playing');
+                }
+            });
+            
+            // 添加ESC键关闭功能
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape' && isPlaying) {
+                    isPlaying = false;
+                    video.muted = true;
+                    video.pause();
+                    video.currentTime = 0;
+                    videoCard.classList.remove('playing');
+                    document.body.classList.remove('video-playing');
+                }
+            });
+            
+            videoCard.appendChild(video);
+            return videoCard;
+        }
+
+        function loadVideos() {
+            videoContainer = document.getElementById('videoContainer');
+            currentCountElement = document.getElementById('currentCount');
+            totalCountElement = document.getElementById('totalCount');
+            
+            // 初始化函数
+            async function initialize() {
+                const loading = updateLoadingText();
+                totalCountElement.textContent = "检测中...";
+                
+                totalVideos = await getTotalVideos();
+                clearInterval(loading.interval);
+                loading.element.remove();
+                
+                totalCountElement.textContent = totalVideos;
+                
+                // 使用分批加载
+                await loadVideoBatch(validVideos);
+                showLoadingComplete();
+            }
+            
+            // 新加载按钮事件监听器
+            document.getElementById('reloadButton').addEventListener('click', async function() {
+                const button = this;
+                button.classList.add('loading');
+                button.disabled = true;
+                
+                try {
+                    // 空现有视频
+                    videoContainer.innerHTML = '';
+                    currentCountElement.textContent = '0';
+                    totalCountElement.textContent = '加载中...';
+                    
+                    // 重置计数和有效视频列表
+                    loadedCount = 0;
+                    validVideos = [];
+                    
+                    // 重新初始化
+                    await initialize();
+                } catch (error) {
+                    console.error('重新加载失败:', error);
+                    totalCountElement.textContent = '加载失败';
+                } finally {
+                    button.classList.remove('loading');
+                    button.disabled = false;
+                }
+            });
+            
+            // 初始加载
+            initialize();
+        }
+
+        // 在页面加载完成后初始化
+        window.addEventListener('DOMContentLoaded', () => {
+            createStars();
+            loadVideos();
+        });
+
+        // 添加窗口大小改变的处理
+        let resizeTimeout;
+        window.addEventListener('resize', () => {
+            clearTimeout(resizeTimeout);
+            resizeTimeout = setTimeout(() => {
+                // 重新计算格布局
+                const container = document.querySelector('.video-container');
+                if (window.innerWidth <= 767) {
+                    container.style.gridTemplateColumns = 'repeat(2, 1fr)';
+                } else if (window.innerWidth <= 1023) {
+                    container.style.gridTemplateColumns = 'repeat(3, 1fr)';
+                } else {
+                    container.style.gridTemplateColumns = 'repeat(auto-fill, minmax(200px, 1fr))';
+                }
+            }, 250);
+        });
+
+        // 成星星
+        function createStars() {
+            const starsContainer = document.getElementById('stars');
+            const numberOfStars = 150; // 减少星星数量
+            
+            for (let i = 0; i < numberOfStars; i++) {
+                const star = document.createElement('div');
+                star.className = 'star';
+                
+                // 随机位置
+                const x = Math.random() * 100;
+                const y = Math.random() * 100;
+                
+                // 增星大小范围
+                const size = 1 + Math.random() * 3; // 最小1px，最大4px
+                
+                // 随机动画持续时间
+                const duration = 3 + Math.random() * 4;
+                
+                // 随机初始透明
+                const initialOpacity = 0.3 + Math.random() * 0.7;
+                
+                star.style.cssText = `
+                    left: ${x}%;
+                    top: ${y}%;
+                    width: ${size}px;
+                    height: ${size}px;
+                    opacity: ${initialOpacity};
+                    --duration: ${duration}s;
+                `;
+                
+                starsContainer.appendChild(star);
+            }
+        }
+
+        // 修改检查视频函数
+        function checkVideo(number) {
+            return new Promise((resolve) => {
+                console.log(`检查视频 ${number}`);
+                const video = document.createElement('video');
+                
+                video.preload = 'metadata';
+                video.src = `sp/${number}.mp4`;
+                
+                video.addEventListener('loadedmetadata', () => {
+                    console.log(`视频 ${number} 检查成功`);
+                    validVideos.push(number);
+                    video.remove();
+                    resolve(true);
+                }, { once: true });
+                
+                video.addEventListener('error', () => {
+                    console.log(`视频 ${number} 检查失败`);
+                    video.remove();
+                    resolve(false);
+                }, { once: true });
+                
+                // 增加超时时间到8秒
+                setTimeout(() => {
+                    console.log(`视频 ${number} 检查超时`);
+                    video.remove();
+                    resolve(false);
+                }, 8000);
+            });
+        }
+        
+        // 修改获取视频总数的函数
+        async function getTotalVideos() {
+            let consecutiveFailures = 0;
+            const maxConsecutiveFailures = 5; // 连续失败5次才停止
+            let number = 1;
+            
+            while (consecutiveFailures < maxConsecutiveFailures) {
+                try {
+                    if (await checkVideo(number)) {
+                        consecutiveFailures = 0; // 成功后重置连续失败计数
+                        console.log(`成功检测到视频 ${number}`);
+                        number++;
+                    } else {
+                        // 如果是前几次失败，多尝试几次
+                        if (consecutiveFailures < 3) {
+                            // 重试前编号3次
+                            let retrySuccess = false;
+                            for (let retry = 0; retry < 3; retry++) {
+                                console.log(`重试第 ${retry + 1} 次检测视频 ${number}`);
+                                await new Promise(resolve => setTimeout(resolve, 300)); // 等待300ms后重试
+                                if (await checkVideo(number)) {
+                                    retrySuccess = true;
+                                    break;
+                                }
+                            }
+                            if (retrySuccess) {
+                                consecutiveFailures = 0;
+                                number++;
+                                continue;
+                            }
+                        }
+                        
+                        console.log(`视频 ${number} 检测失败，连续失败次数: ${consecutiveFailures + 1}`);
+                        consecutiveFailures++;
+                        number++;
+                    }
+                    
+                    // 动态调整检查间隔
+                    const delay = Math.min(50 + consecutiveFailures * 10, 200);
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                    
+                    // 每检测100个视频显示一次进度
+                    if (number % 100 === 0) {
+                        console.log(`已检测 ${number} 个视频，当前有效视频数: ${validVideos.length}`);
+                    }
+                    
+                } catch (error) {
+                    console.error(`检查视频 ${number} 失败:`, error);
+                    consecutiveFailures++;
+                    number++;
+                }
+            }
+            
+            console.log(`检测完成，共找到 ${validVideos.length} 个有效视频`);
+            // 对有效视频编号进行排序
+            validVideos.sort((a, b) => a - b);
+            return validVideos.length;
+        }
+        
+        // 修改分批加载函数，改为逐个加载
+        async function loadVideoBatch(videos) {
+            const loadingStatus = document.createElement('div');
+            loadingStatus.className = 'loading-status';
+            loadingStatus.style.cssText = `
+                position: fixed;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                background: rgba(0, 0, 0, 0.8);
+                color: white;
+                padding: 10px 20px;
+                border-radius: 5px;
+                z-index: 2001;
+            `;
+            document.body.appendChild(loadingStatus);
+            
+            for (let i = 0; i < videos.length; i++) {
+                const number = videos[i];
+                loadingStatus.textContent = `${i + 1}/${videos.length}`;
+                
+                try {
+                    await loadVideo(number);
+                } catch (error) {
+                    console.warn(`视频 ${number} 加载失败:`, error);
+                }
+            }
+            
+            loadingStatus.remove();
+        }
+        
+        // 添加首个视频加载完成的提示
+        function showFirstVideoLoaded() {
+            const message = document.createElement('div');
+            message.style.cssText = `
+                position: fixed;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                background: rgba(0, 0, 0, 0.8);
+                color: white;
+                padding: 15px 30px;
+                border-radius: 5px;
+                z-index: 2001;
+                font-size: 16px;
+            `;
+            message.textContent = '第一个视频加载完成！正在后台加载其他视频...';
+            document.body.appendChild(message);
+            
+            setTimeout(() => {
+                message.style.opacity = '0';
+                message.style.transition = 'opacity 0.5s';
+                setTimeout(() => message.remove(), 500);
+            }, 2000);
+        }
+        
+        // 修改加载视频函数，添加超时控制
+        async function loadVideo(number) {
+            if (!validVideos.includes(number)) return false;
+            
+            try {
+                const videoCard = createVideoCard(number);
+                videoContainer.appendChild(videoCard);
+                
+                const video = videoCard.querySelector('video');
+                video.src = `sp/${number}.mp4`;
+                
+                await new Promise((resolve, reject) => {
+                    video.addEventListener('loadeddata', resolve, { once: true });
+                    video.addEventListener('error', reject, { once: true });
+                    setTimeout(() => reject(new Error('超时')), 5000); // 减少超时时间到5秒
+                });
+                
+                video.classList.add('loaded');
+                loadedCount++;
+                currentCountElement.textContent = loadedCount;
+                return true;
+            } catch (error) {
+                console.warn(`视频 ${number} 加载失败:`, error);
+                return false;
+            }
+        }
+        
+        // 显示加载完成提示
+        function showLoadingComplete() {
+            const message = document.createElement('div');
+            message.style.cssText = `
+                position: fixed;
+                bottom: 20px;
+                left: 50%;
+                transform: translateX(-50%);
+                background: rgba(0, 0, 0, 0.8);
+                color: white;
+                padding: 10px 20px;
+                border-radius: 5px;
+                z-index: 2001;
+            `;
+            message.textContent = `已加载视频：${loadedCount}/${totalVideos}`;
+            document.body.appendChild(message);
+            
+            setTimeout(() => {
+                message.remove();
+            }, 3000);
+        }
+        
+        // 添加加载动画
+        function updateLoadingText() {
+            const dots = ['', '.', '..', '...'];
+            let index = 0;
+            
+            const loadingElement = document.createElement('div');
+            loadingElement.style.cssText = `
+                position: fixed;
+                top: 50%;
+                left: 50%;
+                transform: translate(-50%, -50%);
+                background: rgba(0, 0, 0, 0.8);
+                color: white;
+                padding: 20px 40px;
+                border-radius: 10px;
+                font-size: 18px;
+                z-index: 2001;
+            `;
+            document.body.appendChild(loadingElement);
+            
+            const loadingInterval = setInterval(() => {
+                const validVideoCount = validVideos.length;
+                loadingElement.textContent = `正在检测视频${dots[index]}${validVideoCount > 0 ? ` (已找到${validVideoCount}个)` : ''}`;
+                index = (index + 1) % dots.length;
+            }, 500);
+            
+            return {
+                element: loadingElement,
+                interval: loadingInterval
+            };
+        }
+
+        // 添加实时统计功能
+        function updateVideoStats() {
+            // 假设这是从API获取数据的函数
+            fetch('/api/video-stats')
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('viewCount').textContent = data.views;
+                    document.getElementById('likeCount').textContent = data.likes;
+                });
+        }
+
+        // 每5秒更新一次数据
+        setInterval(updateVideoStats, 5000);
+
+        // 页面加载时立即更新一次
+        updateVideoStats();
+    </script>
+
+    <!-- 在body标结束前添加页脚 -->
+    <footer style="text-align: center; padding: 20px 0; color: #fff; position: relative; z-index: 1;">
+        <div id="currentTime" class="rainbow-text" style="margin-bottom: 10px; font-size: 1.2rem;"></div>
+        <div class="links">
+            <a href="https://github.com/你的用户名">首页</a>
+            <span class="separator">|</span>
+            <a href="https://twitter.com/你的用户名">下一页</a>
+        </div>
+    </footer>
+
+    <script>
+        // 添加时间更新函数
+        function updateTime() {
+            const timeElement = document.getElementById('currentTime');
+            const now = new Date();
+            const timeString = now.toLocaleString('zh-CN', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit',
+                hour12: false
+            });
+            timeElement.textContent = timeString;
+        }
+
+        // 每秒更新时间
+        updateTime();
+        setInterval(updateTime, 1000);
+    </script>
+</body>
+</html> 
